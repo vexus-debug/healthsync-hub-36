@@ -938,6 +938,7 @@ export type Database = {
           id: string
           manager_name: string | null
           notes: string | null
+          shift: string
           updated_at: string
           variance: number
         }
@@ -955,6 +956,7 @@ export type Database = {
           id?: string
           manager_name?: string | null
           notes?: string | null
+          shift?: string
           updated_at?: string
           variance?: number
         }
@@ -972,6 +974,7 @@ export type Database = {
           id?: string
           manager_name?: string | null
           notes?: string | null
+          shift?: string
           updated_at?: string
           variance?: number
         }

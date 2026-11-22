@@ -1,0 +1,4 @@
+ALTER TABLE public.till_closeouts ADD COLUMN IF NOT EXISTS shift text NOT NULL DEFAULT 'Full day';
+CREATE POLICY "Staff read expense receipts" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'expense-receipts' AND public.is_staff(auth.uid()));
+CREATE POLICY "Staff upload expense receipts" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'expense-receipts' AND public.is_staff(auth.uid()));
+CREATE POLICY "Seniors delete expense receipts" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'expense-receipts' AND (public.is_senior_scientist(auth.uid()) OR public.is_lab_admin(auth.uid())));

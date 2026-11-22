@@ -59,6 +59,14 @@ function printReceiptOld(inv: Invoice) {
   w.document.close();
 }
 
+async function openReceipt(url: string) {
+  if (!url.startsWith("storage:")) { window.open(url, "_blank", "noopener"); return; }
+  const w = window.open("", "_blank");
+  const { data, error } = await supabase.storage.from("expense-receipts").createSignedUrl(url.slice(8), 300);
+  if (error || !data) { w?.close(); toast({ title: "Could not open receipt", description: error?.message, variant: "destructive" }); return; }
+  if (w) w.location.href = data.signedUrl;
+}
+
 function exportCsv(name: string, rows: (string | number)[][]) {
   const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
   const a = document.createElement("a");
@@ -181,13 +189,21 @@ function PaymentDialog({ inv, onClose }: { inv: Invoice | null; onClose: () => v
 function ExpenseDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const qc = useQueryClient(); const { user } = useAuth();
   const [f, setF] = useState({ category: "Direct Lab Consumables", vendor: "", description: "", amount: "", receipt_url: "", method: "Cash", expense_date: new Date().toISOString().slice(0, 10) });
+  const [file, setFile] = useState<File | null>(null);
   const save = useMutation({
     mutationFn: async () => {
       if (Number(f.amount) <= 0) throw new Error("Enter an amount");
-      const { error } = await db.from("expenses").insert({ ...f, receipt_url: f.receipt_url || null, amount: Number(f.amount), recorded_by: user?.id });
+      let receipt = f.receipt_url || null;
+      if (file) {
+        const path = `${f.expense_date}/${crypto.randomUUID()}-${file.name.replace(/[^\w.-]/g, "_")}`;
+        const up = await supabase.storage.from("expense-receipts").upload(path, file);
+        if (up.error) throw up.error;
+        receipt = `storage:${path}`;
+      }
+      const { error } = await db.from("expenses").insert({ ...f, receipt_url: receipt, amount: Number(f.amount), recorded_by: user?.id });
       if (error) throw error;
     },
-    onSuccess: () => { toast({ title: "Expense saved" }); qc.invalidateQueries({ queryKey: ["accounting"] }); setF({ ...f, vendor: "", description: "", amount: "", receipt_url: "" }); onOpenChange(false); },
+    onSuccess: () => { toast({ title: "Expense saved" }); qc.invalidateQueries({ queryKey: ["accounting"] }); setF({ ...f, vendor: "", description: "", amount: "", receipt_url: "" }); setFile(null); onOpenChange(false); },
     onError: (e: any) => toast({ title: "Could not save", description: e.message, variant: "destructive" }),
   });
   return (
@@ -205,7 +221,9 @@ function ExpenseDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v
             <SelectContent>{PAYMENT_METHODS.filter((m) => m !== "HMO").map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent></Select></div>
         </div>
         <div><Label>Description</Label><Input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></div>
-        <div><Label>Receipt link (optional)</Label><Input placeholder="https://… photo or document of the receipt" value={f.receipt_url} onChange={(e) => setF({ ...f, receipt_url: e.target.value })} /></div>
+        <div><Label htmlFor="rfile">Receipt photo or PDF (optional)</Label><Input id="rfile" type="file" accept="image/*,application/pdf" capture="environment" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          <p className="text-xs text-muted-foreground mt-1">Max 10MB. Or paste a link instead:</p>
+          <Input className="mt-1" placeholder="https://…" value={f.receipt_url} onChange={(e) => setF({ ...f, receipt_url: e.target.value })} /></div>
         <DialogFooter><Button onClick={() => save.mutate()} disabled={save.isPending}>Save expense</Button></DialogFooter>
       </DialogContent>
     </Dialog>
@@ -220,6 +238,7 @@ const Accounting = () => {
   const [newInv, setNewInv] = useState(false); const [newExp, setNewExp] = useState(false);
   const [payFor, setPayFor] = useState<Invoice | null>(null);
   const [search, setSearch] = useState("");
+  const [expCat, setExpCat] = useState("all"); const [expSearch, setExpSearch] = useState("");
   const { data, isLoading, error } = useMonthData(ym);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -248,6 +267,7 @@ const Accounting = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["accounting"] }),
   });
 
+  const expFiltered = (data?.expenses ?? []).filter((e) => (expCat === "all" || e.category === expCat) && `${e.vendor ?? ""} ${e.description ?? ""} ${e.expense_number}`.toLowerCase().includes(expSearch.toLowerCase()));
   const filtered = (data?.invoices ?? []).filter((i) => `${i.invoice_number} ${i.patient_name} ${i.reference ?? ""}`.toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -334,15 +354,22 @@ const Accounting = () => {
             </Table></div>
           </TabsContent>
 
-          <TabsContent value="expenses">
+          <TabsContent value="expenses" className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <Input className="flex-1 min-w-48" placeholder="Search vendor or details" value={expSearch} onChange={(e) => setExpSearch(e.target.value)} />
+              <Select value={expCat} onValueChange={setExpCat}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="all">All categories</SelectItem>{EXPENSE_CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent></Select>
+              <Button variant="outline" onClick={() => exportCsv(`expenses-${ym}.csv`, [["Expense", "Date", "Category", "Vendor", "Description", "Method", "Amount"], ...expFiltered.map((e) => [e.expense_number, e.expense_date, e.category, e.vendor ?? "", e.description ?? "", e.method, e.amount])])}><Download className="h-4 w-4 mr-1" />CSV</Button>
+            </div>
+            <p className="text-sm text-muted-foreground">{expFiltered.length} expense(s) · Total <b>{naira(expFiltered.reduce((t, e) => t + Number(e.amount), 0))}</b></p>
             <div className="overflow-x-auto"><Table>
               <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Category</TableHead><TableHead>Vendor / details</TableHead><TableHead>Paid by</TableHead><TableHead className="text-right">Amount</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>
-                {data.expenses.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">No expenses this month.</TableCell></TableRow>}
-                {data.expenses.map((e) => (
+                {expFiltered.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">No expenses match.</TableCell></TableRow>}
+                {expFiltered.map((e) => (
                   <TableRow key={e.id}>
                     <TableCell>{e.expense_date}</TableCell><TableCell>{e.category}</TableCell>
-                    <TableCell>{e.vendor}<div className="text-xs text-muted-foreground">{e.description}</div>{e.receipt_url && <a href={e.receipt_url} target="_blank" rel="noreferrer" className="text-xs text-primary underline">Receipt</a>}</TableCell>
+                    <TableCell>{e.vendor}<div className="text-xs text-muted-foreground">{e.description}</div>{e.receipt_url && <button type="button" onClick={() => openReceipt(e.receipt_url!)} className="text-xs text-primary underline">Receipt</button>}</TableCell>
                     <TableCell>{e.method}</TableCell>
                     <TableCell className="text-right">{naira(e.amount)}</TableCell>
                     <TableCell>{isSenior && <Button size="icon" variant="ghost" aria-label="Delete expense" onClick={() => confirm("Delete this expense?") && delExp.mutate(e.id)}><Trash2 className="h-4 w-4" /></Button>}</TableCell>
@@ -353,7 +380,7 @@ const Accounting = () => {
           </TabsContent>
 
           <TabsContent value="till">
-            <TillCloseout byMethod={calc.tillToday} cashExpenses={data.expenses.filter((e) => e.expense_date === today && e.method === "Cash").reduce((t, e) => t + Number(e.amount), 0)} today={today} isCurrentMonth={ym === thisMonth()} />
+            <TillCloseout />
           </TabsContent>
 
           <TabsContent value="debtors" className="space-y-3">

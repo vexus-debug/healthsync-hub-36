@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
@@ -16,7 +17,7 @@ import { naira, tillVariance } from "@/lib/accounting";
 const db = supabase as any;
 
 interface Closeout {
-  id: string; close_date: string; expected_cash: number; expected_pos: number; expected_transfer: number; expected_hmo: number;
+  id: string; close_date: string; shift?: string; expected_cash: number; expected_pos: number; expected_transfer: number; expected_hmo: number;
   cash_expenses: number; counted_cash: number; variance: number; notes: string | null; cashier_name: string | null; manager_name: string | null; created_at: string;
 }
 
@@ -27,7 +28,7 @@ function printSheet(c: Omit<Closeout, "id" | "created_at">) {
   const row = (l: string, n: number, b = false) => `<tr><td>${b ? "<b>" + l + "</b>" : l}</td><td style="text-align:right">${b ? "<b>" + naira(n) + "</b>" : naira(n)}</td></tr>`;
   w.document.write(`<html><head><title>Till closeout ${c.close_date}</title><style>body{font-family:sans-serif;padding:32px;max-width:680px;margin:auto}table{width:100%;border-collapse:collapse}td{padding:6px;border-bottom:1px solid #ddd}.sig{display:flex;gap:40px;margin-top:60px}.sig div{flex:1;border-top:1px solid #000;padding-top:6px;font-size:12px}</style></head><body>
   <h2 style="margin:0">${SITE.name ?? "Lab"}</h2><div>${SITE.address ?? ""}</div><hr/>
-  <h3>Daily till closeout — ${c.close_date}</h3>
+  <h3>Daily till closeout — ${c.close_date}${c.shift ? " (" + c.shift + ")" : ""}</h3>
   <table>${row("Cash collected", c.expected_cash)}${row("POS collected", c.expected_pos)}${row("Bank transfers", c.expected_transfer)}${row("HMO / corporate", c.expected_hmo)}${row("Total collected", c.expected_cash + c.expected_pos + c.expected_transfer + c.expected_hmo, true)}</table><br/>
   <table>${row("Cash expenses paid out", c.cash_expenses)}${row("Expected cash in drawer", v.expected, true)}${row("Cash counted", c.counted_cash, true)}${row(`Variance (${v.status})`, v.variance, true)}</table>
   ${c.notes ? `<p><b>Notes:</b> ${c.notes}</p>` : ""}
@@ -36,11 +37,29 @@ function printSheet(c: Omit<Closeout, "id" | "created_at">) {
   w.document.close();
 }
 
-export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentMonth }: {
-  byMethod: [string, number][]; cashExpenses: number; today: string; isCurrentMonth: boolean;
-}) {
+export const SHIFTS = ["Full day", "Morning", "Evening", "Night"] as const;
+
+export default function TillCloseout() {
   const qc = useQueryClient(); const { user, profile } = useAuth();
-  const get = (m: string) => byMethod.find(([k]) => k === m)?.[1] ?? 0;
+  const [today, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [shift, setShift] = useState<string>("Full day");
+  const dayData = useQuery({
+    queryKey: ["accounting", "till-day", today],
+    queryFn: async () => {
+      const start = new Date(today + "T00:00:00").toISOString();
+      const end = new Date(new Date(today + "T00:00:00").getTime() + 86400000).toISOString();
+      const [p, e] = await Promise.all([
+        db.from("payments").select("amount, method").gte("created_at", start).lt("created_at", end),
+        db.from("expenses").select("amount, method").eq("expense_date", today).eq("method", "Cash"),
+      ]);
+      if (p.error) throw p.error; if (e.error) throw e.error;
+      const by: Record<string, number> = {};
+      for (const x of p.data) by[x.method] = (by[x.method] ?? 0) + Number(x.amount);
+      return { by, cashExpenses: e.data.reduce((t: number, x: any) => t + Number(x.amount), 0) };
+    },
+  });
+  const get = (m: string) => dayData.data?.by[m] ?? 0;
+  const cashExpenses = dayData.data?.cashExpenses ?? 0;
   const exp = { cash: get("Cash"), pos: get("POS"), transfer: get("Transfer"), hmo: get("HMO") };
   const [counted, setCounted] = useState("");
   const [cashier, setCashier] = useState((profile as any)?.display_name ?? "");
@@ -57,7 +76,7 @@ export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentM
   });
 
   const record = () => ({
-    close_date: today, expected_cash: exp.cash, expected_pos: exp.pos, expected_transfer: exp.transfer, expected_hmo: exp.hmo,
+    close_date: today, shift, expected_cash: exp.cash, expected_pos: exp.pos, expected_transfer: exp.transfer, expected_hmo: exp.hmo,
     cash_expenses: cashExpenses, counted_cash: Number(counted || 0), variance: v.variance, notes: notes || null,
     cashier_name: cashier || null, manager_name: manager || null,
   });
@@ -65,6 +84,11 @@ export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentM
   const save = useMutation({
     mutationFn: async () => {
       if (counted === "") throw new Error("Enter the cash you counted");
+      if (!cashier.trim()) throw new Error("Enter the duty receptionist's name");
+      if (!manager.trim()) throw new Error("Enter the verifying manager's name");
+      if (v.variance !== 0 && !notes.trim()) throw new Error("Explain the shortage or overage in the notes");
+      const dup = await db.from("till_closeouts").select("id").eq("close_date", today).eq("shift", shift).limit(1);
+      if (dup.data?.length) throw new Error(`The ${shift} shift for ${today} is already closed`);
       const { error } = await db.from("till_closeouts").insert({ ...record(), closed_by: user?.id });
       if (error) throw error;
     },
@@ -76,9 +100,14 @@ export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentM
 
   return (
     <div className="space-y-4">
-      <Card><CardHeader><CardTitle className="text-base">Day-end closeout ({today})</CardTitle></CardHeader>
+      <Card><CardHeader><CardTitle className="text-base">Day-end closeout ({today} · {shift})</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          {!isCurrentMonth && <p className="text-sm text-muted-foreground">Switch to the current month to see today's totals.</p>}
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div><Label htmlFor="tdate">Date</Label><Input id="tdate" type="date" value={today} max={new Date().toISOString().slice(0, 10)} onChange={(e) => e.target.value && setDay(e.target.value)} /></div>
+            <div><Label>Shift</Label><Select value={shift} onValueChange={setShift}><SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>{SHIFTS.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></div>
+          </div>
+          {dayData.isLoading && <p className="text-sm text-muted-foreground">Loading totals…</p>}
           <Table><TableBody>
             <TableRow><TableCell>Cash</TableCell><TableCell className="text-right">{naira(exp.cash)}</TableCell></TableRow>
             <TableRow><TableCell>POS terminal</TableCell><TableCell className="text-right">{naira(exp.pos)}</TableCell></TableRow>
@@ -92,7 +121,7 @@ export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentM
             <div><Label htmlFor="cashier">Duty receptionist</Label><Input id="cashier" value={cashier} onChange={(e) => setCashier(e.target.value)} /></div>
             <div><Label htmlFor="manager">Verifying manager</Label><Input id="manager" value={manager} onChange={(e) => setManager(e.target.value)} /></div>
           </div>
-          <div><Label htmlFor="tnotes">Notes</Label><Input id="tnotes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Explain any shortage or overage" /></div>
+          <div><Label htmlFor="tnotes">Notes</Label><Input id="tnotes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Required when there is a shortage or overage" /></div>
           {counted !== "" && (
             <div className="flex items-center gap-2 text-sm">
               <Badge variant={tone as any}>{v.status}</Badge>
@@ -100,19 +129,19 @@ export default function TillCloseout({ byMethod, cashExpenses, today, isCurrentM
             </div>
           )}
           <div className="flex gap-2">
-            <Button onClick={() => save.mutate()} disabled={save.isPending || !isCurrentMonth}><Lock className="h-4 w-4 mr-1" />Close till & print sheet</Button>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || dayData.isLoading}><Lock className="h-4 w-4 mr-1" />Close till & print sheet</Button>
           </div>
         </CardContent></Card>
 
       <Card><CardHeader><CardTitle className="text-base">Past closeouts</CardTitle></CardHeader>
         <CardContent className="overflow-x-auto">
           <Table>
-            <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Receptionist</TableHead><TableHead className="text-right">Expected cash</TableHead><TableHead className="text-right">Counted</TableHead><TableHead className="text-right">Variance</TableHead><TableHead /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Shift</TableHead><TableHead>Receptionist</TableHead><TableHead className="text-right">Expected cash</TableHead><TableHead className="text-right">Counted</TableHead><TableHead className="text-right">Variance</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
-              {(history.data ?? []).length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">No closeouts yet.</TableCell></TableRow>}
+              {(history.data ?? []).length === 0 && <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground">No closeouts yet.</TableCell></TableRow>}
               {(history.data ?? []).map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell>{c.close_date}</TableCell><TableCell>{c.cashier_name}</TableCell>
+                  <TableCell>{c.close_date}</TableCell><TableCell>{c.shift}</TableCell><TableCell>{c.cashier_name}</TableCell>
                   <TableCell className="text-right">{naira(Number(c.expected_cash) - Number(c.cash_expenses))}</TableCell>
                   <TableCell className="text-right">{naira(c.counted_cash)}</TableCell>
                   <TableCell className={`text-right ${Number(c.variance) < 0 ? "text-destructive" : ""}`}>{naira(c.variance)}</TableCell>
