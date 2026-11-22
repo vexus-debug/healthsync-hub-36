@@ -1,0 +1,79 @@
+[
+  {
+    "capability": "code",
+    "source": "GitHub repository https://github.com/vexus-debug/healthsync-hub-67.git",
+    "outcome": "As-is import completed and dependencies installed; repository metadata, Lovable metadata, generated route tree, and local secrets excluded",
+    "status": "imported",
+    "next_action": "None"
+  },
+  {
+    "capability": "schema",
+    "source": "Supabase migration file present in the repository",
+    "outcome": "Source migration file imported; no database migration applied",
+    "status": "pending",
+    "next_action": "No schema changes in this import-only request"
+  },
+  {
+    "capability": "records",
+    "source": "No database record export detected",
+    "outcome": "Existing records not imported",
+    "status": "pending",
+    "next_action": "Provide CSV or JSON exports if existing records should be migrated"
+  },
+  {
+    "capability": "auth identities",
+    "source": "Supabase auth integration present; no user export detected",
+    "outcome": "Source auth code preserved without identity migration",
+    "status": "pending",
+    "next_action": "No identity migration in this import-only request"
+  },
+  {
+    "capability": "authorization",
+    "source": "Protected dashboard code and a Supabase function are present",
+    "outcome": "Source authorization code preserved without changes",
+    "status": "pending",
+    "next_action": "No authorization changes in this import-only request"
+  },
+  {
+    "capability": "uploaded file bytes",
+    "source": "Repository image assets",
+    "outcome": "Repository image assets imported",
+    "status": "imported",
+    "next_action": "None"
+  },
+  {
+    "capability": "external providers",
+    "source": "Supabase client and configuration references present",
+    "outcome": "Source integration preserved; local .env secrets excluded",
+    "status": "pending",
+    "next_action": "No provider setup in this import-only request"
+  },
+  {
+    "capability": "public endpoints, callbacks, webhooks, and schedules",
+    "source": "Supabase function source present",
+    "outcome": "Tracked endpoint code preserved; no deployment or cutover performed",
+    "status": "pending",
+    "next_action": "No deployment or cutover in this import-only request"
+  },
+  {
+    "capability": "secrets",
+    "source": "Repository .env file",
+    "outcome": "Local secret values excluded from the project",
+    "status": "pending",
+    "next_action": "Configure required values securely if the app needs live Supabase access"
+  },
+  {
+    "capability": "cutover",
+    "source": "Not requested",
+    "outcome": "No provider or URL cutover",
+    "status": "pending",
+    "next_action": "None"
+  },
+  {
+    "capability": "verification",
+    "source": "User requested no checks or tests",
+    "outcome": "No manual checks or tests run",
+    "status": "pending",
+    "next_action": "User will verify"
+  }
+]
